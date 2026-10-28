@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>web_search_agent</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        display: flex;
+        height: 100vh;
+        color: #222;
+      }
+
+      /* 侧边栏 */
+      #sidebar {
+        width: 240px;
+        flex: 0 0 240px;
+        background: #f6f7f9;
+        border-right: 1px solid #e3e5e8;
+        display: flex;
+        flex-direction: column;
+      }
+      #sidebar h1 {
+        font-size: 15px;
+        margin: 0;
+        padding: 14px 16px;
+        border-bottom: 1px solid #e3e5e8;
+      }
+      #new-chat {
+        margin: 10px 12px;
+        padding: 8px;
+        border: none;
+        border-radius: 6px;
+        background: #1a73e8;
+        color: #fff;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      #new-chat:hover { background: #1666c1; }
+      #threads {
+        list-style: none;
+        margin: 0;
+        padding: 0 8px;
+        overflow-y: auto;
+        flex: 1;
+      }
+      #threads li {
+        padding: 9px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        color: #333;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #threads li:hover { background: #e9edf2; }
+      #threads li.active { background: #d7e6fb; color: #0b57d0; }
+
+      /* 主区域 */
+      #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+      #chat-head {
+        padding: 12px 16px;
+        border-bottom: 1px solid #e3e5e8;
+        font-size: 14px;
+        color: #555;
+      }
+      #chat {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px;
+      }
+      .row { margin: 10px 0; line-height: 1.6; }
+      .row.user { color: #1a73e8; }
+      .row.ai { color: #222; white-space: pre-wrap; }
+      .row.tool {
+        color: #666;
+        font-size: 12px;
+        background: #f3f4f6;
+        border-left: 3px solid #c0c4cc;
+        padding: 8px 10px;
+        border-radius: 4px;
+        white-space: pre-wrap;
+      }
+      .row.system {
+        color: #999;
+        font-size: 12px;
+        font-style: italic;
+      }
+      .row.error { color: #c5221f; }
+
+      /* 审批卡片 */
+      #approval {
+        display: none;
+        margin: 0 16px 8px;
+        border: 1px solid #f0ad4e;
+        background: #fff8e5;
+        border-radius: 6px;
+        padding: 12px;
+      }
+      #approval pre {
+        white-space: pre-wrap;
+        background: #f5f5f5;
+        padding: 8px;
+        border-radius: 4px;
+        margin: 8px 0;
+        font-size: 12px;
+      }
+      #approval button { margin-right: 8px; }
+
+      /* 输入栏 */
+      #input-bar {
+        display: flex;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid #e3e5e8;
+      }
+      #input {
+        flex: 1;
+        padding: 10px;
+        border: 1px solid #d0d4da;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+      #send {
+        padding: 0 18px;
+        border: none;
+        border-radius: 6px;
+        background: #1a73e8;
+        color: #fff;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      #send:hover { background: #1666c1; }
+      #send:disabled { background: #a9c2ec; cursor: default; }
+    </style>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <h1>会话列表</h1>
+      <button id="new-chat">+ 新建对话</button>
+      <ul id="threads"></ul>
+    </aside>
+
+    <main id="main">
+      <div id="chat-head">未选择会话</div>
+      <div id="chat"></div>
+
+      <div id="approval">
+        <strong>需要审批：模型打算调用工具</strong>
+        <pre id="approval-content"></pre>
+        <button onclick="decide('approve')">批准</button>
+        <button onclick="decide('reject')">拒绝</button>
+      </div>
+
+      <div id="input-bar">
+        <input id="input" placeholder="输入问题，回车发送" disabled />
+        <button id="send" disabled>发送</button>
+      </div>
+    </main>
+
+    <script>
+      // 使用相对路径，避免 localhost / 127.0.0.1 跨域问题
+      const API = "";
+      const chatEl = document.getElementById("chat");
+      const chatHeadEl = document.getElementById("chat-head");
+      const threadsEl = document.getElementById("threads");
+      const inputEl = document.getElementById("input");
+      const sendBtn = document.getElementById("send");
+      const approvalEl = document.getElementById("approval");
+      const approvalContentEl = document.getElementById("approval-content");
+
+      let threadId = null;
+      let pendingInterruptId = null;
+      let streaming = false;
+
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !streaming) send();
+      });
+      sendBtn.addEventListener("click", () => { if (!streaming) send(); });
+      document.getElementById("new-chat").addEventListener("click", newChat);
+
+      // ---------- 会话列表 ----------
+      async function loadThreads() {
+        try {
+          const resp = await fetch(API + "/threads");
+          const data = await resp.json();
+          threadsEl.innerHTML = "";
+          for (const t of data.threads) {
+            const li = document.createElement("li");
+            li.textContent = t.title || t.thread_id;
+            li.dataset.id = t.thread_id;
+            if (t.thread_id === threadId) li.classList.add("active");
+            li.addEventListener("click", () => openThread(t.thread_id));
+            threadsEl.appendChild(li);
+          }
+        } catch (err) {
+          console.error("加载会话列表失败", err);
+        }
+      }
+
+      function newChat() {
+        threadId = "web-" + crypto.randomUUID().replace(/-/g, "");
+        chatHeadEl.textContent = "新对话";
+        chatEl.innerHTML = "";
+        approvalEl.style.display = "none";
+        pendingInterruptId = null;
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        inputEl.focus();
+        loadThreads();
+      }
+
+      async function openThread(id) {
+        threadId = id;
+        approvalEl.style.display = "none";
+        pendingInterruptId = null;
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        await loadHistory(id);
+        loadThreads();
+      }
+
+      async function loadHistory(id) {
+        chatEl.innerHTML = "";
+        chatHeadEl.textContent = "加载中…";
+        try {
+          const resp = await fetch(API + "/threads/" + encodeURIComponent(id) + "/history");
+          const data = await resp.json();
+          for (const m of data.messages) appendRole(m.role, m.content);
+          chatHeadEl.textContent = "会话：" + id;
+        } catch (err) {
+          chatHeadEl.textContent = "加载失败";
+          appendRole("error", "加载历史出错：" + err);
+        }
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+
+      // ---------- 消息渲染 ----------
+      function appendRole(role, content) {
+        const div = document.createElement("div");
+        const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+        if (role === "human") {
+          div.className = "row user";
+          div.textContent = "你：" + text;
+        } else if (role === "ai") {
+          div.className = "row ai";
+          div.textContent = "AI：" + text;
+        } else if (role === "tool") {
+          div.className = "row tool";
+          div.textContent = "工具返回：" + (text.length > 600 ? text.slice(0, 600) + " …(已截断)" : text);
+        } else {
+          div.className = "row system";
+          div.textContent = "[" + role + "] " + text;
+        }
+        chatEl.appendChild(div);
+        chatEl.scrollTop = chatEl.scrollHeight;
+        return div;
+      }
+
+      // ---------- 发送 / 流式 ----------
+      async function send() {
+        const text = inputEl.value.trim();
+        if (!text || !threadId) return;
+        inputEl.value = "";
+        appendRole("human", text);
+        const aiDiv = appendRole("ai", "");
+        await streamChat(
+          "/chat/stream",
+          { message: text, thread_id: threadId },
+          aiDiv,
+        );
+      }
+
+      async function decide(type) {
+        if (!pendingInterruptId) return;
+        approvalEl.style.display = "none";
+        const aiDiv = appendRole("ai", "");
+        await streamChat(
+          "/resume/stream",
+          {
+            thread_id: threadId,
+            decisions: [{ interrupt_id: pendingInterruptId, type }],
+          },
+          aiDiv,
+        );
+        pendingInterruptId = null;
+      }
+
+      async function streamChat(path, body, aiDiv) {
+        streaming = true;
+        sendBtn.disabled = true;
+        try {
+          const resp = await fetch(API + path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!resp.ok) {
+            aiDiv.textContent += "\n[HTTP " + resp.status + "]";
+            return;
+          }
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            // SSE 以 \n\n 分隔事件
+            const parts = buffer.split("\n\n");
+            buffer = parts.pop();
+            for (const part of parts) {
+              const line = part.trim();
+              if (!line.startsWith("data:")) continue;
+              const jsonStr = line.slice(5).trim();
+              if (!jsonStr) continue;
+              let event;
+              try { event = JSON.parse(jsonStr); }
+              catch { continue; }
+              handleEvent(event, aiDiv);
+            }
+          }
+        } finally {
+          streaming = false;
+          sendBtn.disabled = false;
+          loadThreads(); // 更新侧边栏（新会话出现 / 标题、排序更新）
+        }
+      }
+
+      function handleEvent(event, aiDiv) {
+        if (event.type === "token") {
+          aiDiv.textContent += event.content;
+          chatEl.scrollTop = chatEl.scrollHeight;
+        } else if (event.type === "interrupt") {
+          const first = event.interrupts[0];
+          if (!first) return;
+          pendingInterruptId = first.id;
+          approvalContentEl.textContent = describeInterrupt(first.value);
+          approvalEl.style.display = "block";
+        } else if (event.type === "error") {
+          const div = document.createElement("div");
+          div.className = "row error";
+          div.textContent = "错误：" + event.content;
+          chatEl.appendChild(div);
+          chatEl.scrollTop = chatEl.scrollHeight;
+        } else if (event.type === "done") {
+          // 流结束，无需额外处理
+        }
+      }
+
+      function describeInterrupt(value) {
+        if (value && typeof value === "object") {
+          const name = value.name || value.tool || "(未知工具)";
+          const args = value.args ? JSON.stringify(value.args, null, 2) : "";
+          return "工具：" + name + "\n参数：" + args;
+        }
+        return "需要审批：" + JSON.stringify(value);
+      }
+
+      // 启动：先建一个空会话，再拉列表
+      newChat();
+      loadThreads();
+    </script>
+  </body>
+</html>

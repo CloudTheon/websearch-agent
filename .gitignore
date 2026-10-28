@@ -1,0 +1,50 @@
+# Python 编译产物
+__pycache__/
+*.py[oc]
+*.pyd
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+
+# 虚拟环境（uv / venv / pipenv / poetry）
+.venv/
+venv/
+env/
+
+# 依赖锁文件按需保留：uv.lock 建议提交以保证可复现构建，此处不忽略
+
+# 环境变量（含密钥，切勿提交）
+.env
+.env.*
+!.env.example
+
+# 运行时数据：SQLite 持久化数据库（对话状态 + 会话列表）
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# 测试 / 覆盖率
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# 日志
+*.log
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
