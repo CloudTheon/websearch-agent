@@ -92,6 +92,28 @@
       }
       .row.error { color: #c5221f; }
 
+      /* Markdown 正文 */
+      .row.ai .md { white-space: normal; word-wrap: break-word; }
+      .md p { margin: 0 0 8px; }
+      .md h1, .md h2, .md h3 { margin: 12px 0 6px; line-height: 1.3; }
+      .md code {
+        background: #f3f4f6; padding: 1px 5px; border-radius: 4px;
+        font-family: Consolas, monospace; font-size: 13px;
+      }
+      .md pre {
+        background: #0f172a; color: #e2e8f0; padding: 12px;
+        border-radius: 6px; overflow-x: auto; margin: 8px 0;
+      }
+      .md pre code { background: none; padding: 0; color: inherit; }
+      .md ul, .md ol { padding-left: 22px; margin: 6px 0; }
+      .md blockquote {
+        border-left: 3px solid #cbd5e1; margin: 8px 0; padding: 2px 12px;
+        color: #475569;
+      }
+      .md a { color: #1a73e8; }
+      .md table { border-collapse: collapse; margin: 8px 0; }
+      .md th, .md td { border: 1px solid #e3e5e8; padding: 4px 8px; }
+
       /* 审批卡片 */
       #approval {
         display: none;
@@ -137,6 +159,9 @@
       #send:hover { background: #1666c1; }
       #send:disabled { background: #a9c2ec; cursor: default; }
     </style>
+    <!-- Markdown 渲染：本地 vendor，离线可用 -->
+    <script src="/static/vendor/marked.min.js"></script>
+    <script src="/static/vendor/purify.min.js"></script>
   </head>
   <body>
     <aside id="sidebar">
@@ -239,6 +264,19 @@
         chatEl.scrollTop = chatEl.scrollHeight;
       }
 
+      // ---------- Markdown 渲染 ----------
+      // 把 Markdown 转成安全 HTML；若本地库未加载，降级为纯文本（仍做转义）。
+      function renderMarkdown(src) {
+        if (!src) return "";
+        if (typeof marked === "undefined") {
+          const tmp = document.createElement("div");
+          tmp.textContent = src;
+          return tmp.innerHTML;
+        }
+        const html = marked.parse(src);
+        return (typeof DOMPurify !== "undefined") ? DOMPurify.sanitize(html) : html;
+      }
+
       // ---------- 消息渲染 ----------
       function appendRole(role, content) {
         const div = document.createElement("div");
@@ -248,7 +286,15 @@
           div.textContent = "你：" + text;
         } else if (role === "ai") {
           div.className = "row ai";
-          div.textContent = "AI：" + text;
+          const label = document.createElement("span");
+          label.textContent = "AI：";
+          const md = document.createElement("div");
+          md.className = "md";
+          md.innerHTML = renderMarkdown(text);
+          div.appendChild(label);
+          div.appendChild(md);
+          div._mdEl = md;   // 流式增量渲染时复用
+          div._md = text;
         } else if (role === "tool") {
           div.className = "row tool";
           div.textContent = "工具返回：" + (text.length > 600 ? text.slice(0, 600) + " …(已截断)" : text);
@@ -300,7 +346,12 @@
             body: JSON.stringify(body),
           });
           if (!resp.ok) {
-            aiDiv.textContent += "\n[HTTP " + resp.status + "]";
+            if (aiDiv._mdEl) {
+              aiDiv._md = (aiDiv._md || "") + "\n[HTTP " + resp.status + "]";
+              aiDiv._mdEl.innerHTML = renderMarkdown(aiDiv._md);
+            } else {
+              aiDiv.textContent += "\n[HTTP " + resp.status + "]";
+            }
             return;
           }
           const reader = resp.body.getReader();
@@ -335,7 +386,8 @@
 
       function handleEvent(event, aiDiv) {
         if (event.type === "token") {
-          aiDiv.textContent += event.content;
+          aiDiv._md = (aiDiv._md || "") + event.content;
+          aiDiv._mdEl.innerHTML = renderMarkdown(aiDiv._md);
           chatEl.scrollTop = chatEl.scrollHeight;
         } else if (event.type === "interrupt") {
           const first = event.interrupts[0];
